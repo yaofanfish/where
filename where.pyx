@@ -4,6 +4,11 @@ import sys, os, subprocess
 import re, argparse
 import code, inspect
 import json
+
+from libc.dirent cimport opendir, readdir, closedir, DIR, dirent, DT_REG, DT_DIR
+from libc.string cimport strcmp
+from libc.stdlib cimport NULL
+
 try:
 	1/0
 	from rich import print_json
@@ -192,7 +197,13 @@ def search_path(pattern, path, match_function=re.fullmatch): # search 1 path, e.
 	#				print("matched!", file)
 				matches.append(os.path.join(path, file))
 	"""
-	for file in os.listdir(path):
+	cdef DIR* directory = opendir(path);
+	cdef dirent* entry;
+	while 1:
+		entry = readdir(directory)
+		if entry==NULL:
+			break
+		file = entry.d_name.decode("utf-8")
 		if match_function(pattern, file):
 			matches.append(os.path.join(path, file))
 	#v=0
@@ -239,11 +250,23 @@ def search_paths(pattern, path, search_path_function=search_path, match_function
 	#			print("newpath:", newpath)
 				matches += search_paths(pattern, newpath, search_path_function, match_function)
 	"""
+	cdef DIR* directory = opendir(path);
+	cdef dirent* entry;
+	while 1:
+		entry = readdir(directory)
+		if entry==NULL:
+			break
+		if entry.d_type == DT_DIR:
+			py_entry = entry.d_name.decode("utf-8")
+			newpath = os.path.join(cur[0], py_entry)+cur[1]
+			matches += search_paths(pattern, newpath, search_path_function, match_function)
+	"""
 	for directory in os.listdir(cur[0]):
 		if os.path.isdir(os.path.join(cur[0], directory)): # i spent an hour debugging this when it used to be if os.path.isdir(directory)
 			newpath = os.path.join(cur[0], directory)+cur[1]
 #			print("newpath:", newpath)
 			matches += search_paths(pattern, newpath, search_path_function, match_function)
+	"""
 	return matches
 def search_for(pattern, paths, search_path_function=search_paths, match_function=re.fullmatch):
 	matches = []
