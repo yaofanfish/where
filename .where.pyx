@@ -1,0 +1,370 @@
+#!/usr/bin/python3
+
+import sys, os, subprocess
+import re, argparse
+import code, inspect
+import json
+
+# dirent.h is not included by default
+cdef extern from "dirent.h":
+	# structs
+	ctypedef struct DIR
+	ctypedef struct dirent:
+		char* d_name
+		unsigned char d_type
+	#ctypedef struct_dirent dirent
+
+	# consts
+	int DT_REG
+	int DT_DIR
+
+	# fns
+	DIR* opendir(const char* name)
+	dirent* readdir(DIR* d)
+	int closedir(DIR* d)
+#from libc.dirent cimport opendir, readdir, closedir, DIR, dirent, DT_REG, DT_DIR
+from libc.string cimport strcmp
+#from libc.stddef cimport NULL
+cdef void* NULL = <void*>0;
+
+try:
+	1/0
+	from rich import print_json
+except:
+	def print_json(data):
+		try:
+			print(json.dumps(data, indent="\t"))
+		except:
+			print(data)
+
+HOME=os.getenv("HOME", "/tmp").rstrip("/")
+dirs = [
+	"",
+	"/",
+    "/usr/bin",
+    "/usr/sbin",
+    "/bin",
+    "/sbin",
+
+    "/usr/lib",
+    "/usr/lib32",
+    "/usr/lib64",
+    "/etc",
+    "/usr/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/usr/games",
+    "/usr/games/bin",
+    "/usr/games/lib",
+    "/usr/emacs/etc",
+    "/usr/lib/emacs/*/etc",
+    "/usr/TeX/bin",
+    "/usr/tex/bin",
+    "/usr/interviews/bin/LINUX",
+
+    "/usr/X11R6/bin",
+    "/usr/X386/bin",
+    "/usr/bin/X11",
+    "/usr/X11/bin",
+    "/usr/X11R5/bin",
+
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/local/etc",
+    "/usr/local/lib",
+    "/usr/local/games",
+    "/usr/local/games/bin",
+    "/usr/local/emacs/etc",
+    "/usr/local/TeX/bin",
+    "/usr/local/tex/bin",
+    "/usr/local/bin/X11",
+    "/usr/local/include"
+
+    "/usr/contrib",
+    "/usr/hosts",
+    "/usr/include",
+
+    "/usr/g++-include",
+
+    "/usr/ucb",
+    "/usr/old",
+    "/usr/new",
+    "/usr/local",
+    "/usr/libexec",
+    "/usr/share",
+
+    "/opt/*/bin",
+
+    "/usr/man/*",
+    "/usr/share/man/*",
+    "/usr/X386/man/*",
+    "/usr/X11/man/*",
+    "/usr/TeX/man/*",
+    "/usr/interviews/man/mann",
+    "/usr/share/info"
+]
+dirsman = [
+	"/usr/man/*",
+	"/usr/share/man/*",
+	"/usr/X386/man/*",
+	"/usr/X11/man/*",
+	"/usr/TeX/man/*",
+	"/usr/interviews/man/mann",
+	"/usr/share/info",
+]
+dirssrc = [
+	"/usr/src/*/*",
+	"/usr/src/lib/libc/*",
+	"/usr/src/lib/libc/net/*",
+	"/usr/src/ucb/pascal",
+	"/usr/src/ucb/pascal/utilities",
+	"/usr/src/undoc",
+]
+special = [
+	"/boot/grub/",
+	"/var/lib/snapd/snaps/",
+	"/snap/bin/",
+	"/home/linuxbrew/.linuxbrew/Cellar/",
+	"/home/linuxbrew/.linuxbrew/bin/",
+	"/opt/homebrew/Cellar/",
+	"/opt/homebrew/bin",
+	f"{HOME}/.local/bin",
+	f"{HOME}/.linuxbrew/Cellar",
+	f"{HOME}/.linuxbrew/bin",
+        f"{HOME}/.homebrew/Cellar",
+        f"{HOME}/.homebrew/bin",
+]
+dirs += special
+dirs += os.getenv("PATH", "").split(":")
+dirs = list(dict.fromkeys(dirs))
+match_fns = {
+	"regex": re.search, # regex
+	"regex_fullmatch": re.fullmatch, # ^regex$
+	"regex_match": re.match, # ^regex
+	"fullmatch": str.__eq__,
+}
+def _pad_empty_arg(fn):
+	def function(*args, **kwargs):
+		return fn(None, *args, **kwargs)
+	return function
+def _regex(pattern):
+	regex = re.compile(pattern).search
+	return _pad_empty_arg(regex)
+def _regex_fullmatch(pattern):
+	regex = re.compile(pattern).fullmatch
+	return _pad_empty_arg(regex)
+def _regex_match(pattern):
+	regex = re.compile(pattern).match
+	return _pad_empty_arg(regex)
+def _fullmatch(pattern):
+	return str.__eq__
+match_functions = {
+	"regex": _regex,
+	"regex_fullmatch": _regex_fullmatch,
+	"regex_match": _regex_match,
+	"fullmatch": _fullmatch,
+}
+extensions = [
+	".py",
+	".c",
+	".h",
+	".cpp",
+	".hpp",
+	".bin",
+	".elf",
+	".json",
+	".exe",
+	".cmd",
+	".bat",
+    ".js",
+    ".ts",
+    ".java",
+    ".cs",
+    ".rb",
+    ".go",
+#    ".rs", # i hate rust
+    ".lua",
+    ".php",
+    ".swift",
+    ".kt",
+    ".m",
+    ".sh",
+    ".pl",
+    ".r",
+]
+def case_insens(fn):
+	def insens_fn(*v, **k):
+		nv = [i.lower() if isinstance(i, str) else i for i in v]
+		nk = {_: i.lower() if isinstance(i, str) else i for _, i in k}
+		re = fn(*nv, **nk)
+		return re
+	return insens_fn
+
+def search_path(pattern, path, match_function=re.fullmatch): # search 1 path, e.g., /usr/bin/
+#	global v
+	matches = []
+	"""
+	with os.scandir(path) as pathit:
+		for f in pathit:
+			file = f.name
+	#		if v:
+	#			print("comparing", file, f"(full={path}/{file}")
+			if match_function(pattern, file):
+	#			if v:
+	#				print("matched!", file)
+				matches.append(os.path.join(path, file))
+	"""
+	cdef DIR* directory = opendir(path);
+	cdef dirent* entry;
+	while 1:
+		entry = readdir(directory)
+		if entry==NULL:
+			break
+		file = entry.d_name.decode("utf-8")
+		if match_function(pattern, file):
+			matches.append(os.path.join(path, file))
+	closedir(directory);
+	#v=0
+	return matches
+# special searches
+def search_path_patterns(patterns, path, match_function=re.fullmatch):
+	matches = []
+	for pattern in patterns:
+		matches += search_path(pattern, path, match_function)
+	return matches
+def search_path_extensions(pattern, extensions, path, match_function=re.fullmatch):
+	patterns = []
+	for extension in extensions:
+		patterns.append(f"{pattern}{extension}")
+	return search_path_patterns(patterns, path, match_function=match_function)
+def search_path_MAN(pattern, path, match_function=re.fullmatch):
+#	global v
+#	print("search path man called on", path)
+	patterns = []
+	for i in range(1, 10):
+		patterns.extend([f"{pattern}.{i}.gz", f"{pattern}.{i}p.gz"])
+#	print(patterns)
+#	v=1
+	return search_path_patterns(patterns, path, match_function)
+def search_path_SRC(pattern, path, match_function=re.fullmatch):
+	return search_path_extensions(pattern, extensions, path, match_function=match_function)
+#	patterns = []
+#	for extension in extensions:
+#		patterns.append(f"{pattern}{extension}")
+#	return search_path_patterns(patterns, path, match_function)
+# end special searches
+def search_paths(pattern, path, search_path_function=search_path, match_function=re.fullmatch): # search a path smartly, e.g., /usr/*/
+	if not "*" in path:
+		return search_path_function(pattern, path, match_function)
+	matches = []
+	cur = path.split("*", 1)
+#	print(cur)
+	"""
+	with os.scandir(cur[0]) as cur0it:
+		for d in cur0it:
+			directory = d.name
+			if os.path.isdir(os.path.join(cur[0], directory)): # i spent an hour debugging this when it used to be if os.path.isdir(directory)
+				newpath = os.path.join(cur[0], directory)+cur[1]
+	#			print("newpath:", newpath)
+				matches += search_paths(pattern, newpath, search_path_function, match_function)
+	"""
+	cdef DIR* directory = opendir(path);
+	cdef dirent* entry;
+	while 1:
+		entry = readdir(directory)
+		if entry==NULL:
+			break
+		if entry.d_type == DT_DIR:
+			py_entry = entry.d_name.decode("utf-8")
+			newpath = os.path.join(cur[0], py_entry)+cur[1]
+			matches += search_paths(pattern, newpath, search_path_function, match_function)
+	closedir(directory)
+	"""
+	for directory in os.listdir(cur[0]):
+		if os.path.isdir(os.path.join(cur[0], directory)): # i spent an hour debugging this when it used to be if os.path.isdir(directory)
+			newpath = os.path.join(cur[0], directory)+cur[1]
+#			print("newpath:", newpath)
+			matches += search_paths(pattern, newpath, search_path_function, match_function)
+	"""
+	return matches
+def search_for(pattern, paths, search_path_function=search_paths, match_function=re.fullmatch):
+	matches = []
+	for path in paths:
+		try:
+			matches += search_paths(pattern, path, search_path_function=search_path_function, match_function=match_function)
+		except (FileNotFoundError, PermissionError) as e:
+			"error (maybe not my fault)"
+#			print(e)
+			#print("error at", path)
+	return matches
+def where(
+	pattern,
+	pathses=[
+		[dirs, search_path],
+		[dirsman, search_path_MAN],
+		[dirssrc, search_path_SRC],
+		  ],
+	pathses_exclude_map=[
+		"main",
+		"man",
+		"src",
+		],
+	pathses_excludes=[
+		"none",
+		],
+	pathses_excluded_indexes=None,
+	match_function=re.fullmatch,
+):
+	#print("hi")
+	if pathses_excluded_indexes is None:
+		pathses_excluded_indexes = [] if "none" in pathses_excludes else [pathses_exclude_map.index(i) for i in pathses_excludes]
+	matches = []
+	i=0
+	for paths, search_path_function in pathses:
+#	for i in range(len(pathseskeys)):
+		if i in pathses_excluded_indexes:
+			i+=1
+			continue
+#		paths = pathseskeys[i]
+#		search_path_function = pathses[paths]
+		#print("searching for using", search_path_function)
+		matches += search_for(pattern, paths, search_path_function=search_path_function, match_function=match_function)
+		i+=1
+	return matches
+
+def main(args=sys.argv):
+	p = argparse.ArgumentParser("Locate the binary, source, and manual-page paths for a file name or regex pattern.")
+	p.add_argument("bin")
+	p.add_argument("-r", "--regex", action="store_true", help="use pure regex to match (consider using --match or --fullmatch instead)")
+	p.add_argument("-m", "--match", action="store_true", help="use regex to match and automatically add ^ at the start of the pattern")
+	p.add_argument("-f", "--fullmatch", action="store_true", help="use regex to match and automatically add ^ and $ at the ends of the pattern")
+	p.add_argument("-i", "--interactive", action="store_true", help="open python interactive shell after")
+	p.add_argument("-c", "--case-sensitive", action="store_true", help="grep -i")
+	p.add_argument("-x", "--exclude", help="exclude directory types in search; available categories: main,man,src,none", type=lambda x: x.split(","), default=[])
+	#p.add_argument("-g", "--go", action="store_true", help="go to the first found location")
+	v=0
+	args = p.parse_args()
+	#args.bin = args.bin.split("/")
+	#args.bin = args.bin[len(args.bin)-1]
+	# note: get match_function
+	if args.regex:
+		match_function = match_functions["regex"]
+	elif args.match:
+		match_function = match_functions["regex_match"]
+	elif args.fullmatch:
+		match_function = match_functions["regex_fullmatch"]
+	else:
+		match_function = match_functions["fullmatch"] # may be discombob bc . means sm in regex
+	# make it case insens, if not specified otherwise
+	match_function = match_function(args.bin)
+	if not args.case_sensitive: match_function = case_insens(match_function)
+
+	# note: START
+	result=where(args.bin, pathses_excludes=args.exclude, match_function=match_function)
+	print_json(data=result)
+	if args.interactive:
+		code.interact(local=dict(globals(), **locals()))
+
+if __name__=="__main__":
+	main()
