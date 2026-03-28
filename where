@@ -2,10 +2,13 @@
 
 import sys, os, subprocess
 import re, argparse
-import code, inspect
 import json
 try:
-	1/0
+	import code, inspect, pty # debug
+except:
+	pass
+try:
+#	1/0
 	from rich import print_json
 except:
 	def print_json(data):
@@ -71,7 +74,9 @@ dirs = [
     "/usr/libexec",
     "/usr/share",
 
+	"/opt",
     "/opt/*/bin",
+	"/opt/*",
 
     "/usr/man/*",
     "/usr/share/man/*",
@@ -121,6 +126,7 @@ match_fns = {
 	"regex_match": re.match, # ^regex
 	"fullmatch": str.__eq__,
 }
+"""
 def _pad_empty_arg(fn):
 	def function(*args, **kwargs):
 		return fn(None, *args, **kwargs)
@@ -142,6 +148,8 @@ match_functions = {
 	"regex_match": _regex_match,
 	"fullmatch": _fullmatch,
 }
+"""
+match_functions = match_fns # re.compile did NOT work the way i thought it would 😭
 extensions = [
 	".py",
 	".c",
@@ -170,6 +178,9 @@ extensions = [
     ".pl",
     ".r",
 ]
+class mdict(dict):
+	pass
+bash = lambda: pty.spawn("/bin/bash")
 def case_insens(fn):
 	def insens_fn(*v, **k):
 		nv = [i.lower() if isinstance(i, str) else i for i in v]
@@ -222,7 +233,7 @@ def search_path_SRC(pattern, path, match_function=re.fullmatch):
 #	patterns = []
 #	for extension in extensions:
 #		patterns.append(f"{pattern}{extension}")
-	return search_path_patterns(patterns, path, match_function)
+#	return search_path_patterns(patterns, path, match_function)
 # end special searches
 def search_paths(pattern, path, search_path_function=search_path, match_function=re.fullmatch): # search a path smartly, e.g., /usr/*/
 	if not "*" in path:
@@ -290,18 +301,83 @@ def where(
 		i+=1
 	return matches
 
+_conf = mdict({
+	"regex": False,
+	"match": False,
+	"fulmatch": False,
+	"interactive": False,
+	"case-sensitive": False,
+	"exclude": ["man"],
+})
+_conf.default = True
+_dirpath = f"{os.getenv('HOME', '/tmp')}/.config/where/"
+_filepath = "config.json"
+_path = os.path.abspath(os.path.join(_dirpath, _filepath))
+def rdconfig(path=None, dirpath=None, filepath=None):
+	if not path:
+		if not dirpath: dirpath = _dirpath
+		if not filepath: filepath = _filepath
+		path = os.path.abspath(os.path.join(dirpath, filepath))
+	if not os.path.isfile(path):
+		return _conf
+	with open(path) as f:
+		conf = json.load(f)
+	conf = mdict(conf)
+	conf.default = False
+	return conf
+def mkconfig(path=None, dirpath=_dirpath, filepath=_filepath, _conf=_conf):
+	if not path:
+		path = os.path.abspath(os.path.join(dirpath, filepath))
+	else:
+		dirpath = os.path.dirname(path)
+	os.makedirs(dirpath, exist_ok=True)
+	with open(path, "w") as f:
+		json.dump(_conf, f, indent="\t")
+	return path
+def verbose_print(args, min_lvl, *printargs, **printkwargs):
+	if args.verbose>=min_lvl:
+		print(*printargs, **printkwargs)
+		return 1
+	else:
+		return 0
 def main(args=sys.argv):
+	conf = _conf.copy()
+
 	p = argparse.ArgumentParser("Locate the binary, source, and manual-page paths for a file name or regex pattern.")
-	p.add_argument("bin")
-	p.add_argument("-r", "--regex", action="store_true", help="use pure regex to match (consider using --match or --fullmatch instead)")
-	p.add_argument("-m", "--match", action="store_true", help="use regex to match and automatically add ^ at the start of the pattern")
-	p.add_argument("-f", "--fullmatch", action="store_true", help="use regex to match and automatically add ^ and $ at the ends of the pattern")
-	p.add_argument("-i", "--interactive", action="store_true", help="open python interactive shell after")
-	p.add_argument("-c", "--case-sensitive", action="store_true", help="grep -i")
-	p.add_argument("-x", "--exclude", help="exclude directory types in search; available categories: main,man,src,none", type=lambda x: x.split(","), default=[])
+	p.add_argument("bin", help="The file to search for - also use create_config_default to create a default config; use show_config to show config")
+	p.add_argument("--config", help=f"The path to the config file (used for creation and reading) - default {_path}", default=None)
+	p.add_argument("-r", "--regex", action="store_true", help="use pure regex to match (consider using --match or --fullmatch instead)", default=None)
+	p.add_argument("-m", "--match", action="store_true", help="use regex to match and automatically add ^ at the start of the pattern", default=None)
+	p.add_argument("-f", "--fullmatch", action="store_true", help="use regex to match and automatically add ^ and $ at the ends of the pattern", default=None)
+	p.add_argument("-i", "--interactive", action="store_true", help="open python interactive shell after", default=None)
+	p.add_argument("-c", "--case-sensitive", action="store_true", help="grep -i", default=None)
+	p.add_argument("-x", "--exclude", help="exclude directory types in search; available categories: main,man,src,none", type=lambda x: x.split(","), default=None)
+	p.add_argument("-v", "--verbose", help="verbose", action="count", default=0)
 	#p.add_argument("-g", "--go", action="store_true", help="go to the first found location")
 	v=0
 	args = p.parse_args()
+	if args.bin == "create_config_default":
+		verbose_print(args, 0, "creating config")
+		verbose_print(args, 0, "created a default config in", mkconfig(args.config))
+		return
+	if args.bin == "show_config":
+		conf = rdconfig(args.config)
+		if conf.default:
+			print("\033[31m// note: default config because no file exists/was specified\033[0m")
+		print_json(data=conf)
+		return
+	if args.bin == "remove_config":
+		verbose_print(args, 0, "removing config")
+		
+	if args.config != "no":
+		conf = rdconfig(args.config)
+		verbose_print(args, 3, conf)
+		for setting, default in conf.items():
+			try:
+				if getattr(args, setting) == None:
+					setattr(args, setting, default)
+					verbose_print(args, 2, "set", setting, "to", default)
+			except: pass
 	#args.bin = args.bin.split("/")
 	#args.bin = args.bin[len(args.bin)-1]
 	# note: get match_function
@@ -314,9 +390,10 @@ def main(args=sys.argv):
 	else:
 		match_function = match_functions["fullmatch"] # may be discombob bc . means sm in regex
 	# make it case insens, if not specified otherwise
-	match_function = match_function(args.bin)
+#	match_function = match_function(args.bin)
 	if not args.case_sensitive: match_function = case_insens(match_function)
 
+#	code.interact(local=dict(globals(), **locals()))
 	# note: START
 	result=where(args.bin, pathses_excludes=args.exclude, match_function=match_function)
 	print_json(data=result)
