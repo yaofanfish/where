@@ -118,6 +118,20 @@ special = [
         f"{HOME}/.homebrew/bin",
 ]
 dirs += special
+try:
+	conff_user_d = os.path.join(os.environ["HOME"], ".config/where/")
+	conff_system = "/etc/where/paths_extra.json"
+	with open(os.path.join(conff_user_d, "paths_extra.json")) as f:
+		extra = json.load(f)
+	dirs += extra
+except:
+	"getting more dirs failed"
+	try:
+		os.makedirs(conff_user_d, exist_ok=True)
+		with open(os.path.join(conff_user_d, "paths_extra.json"), "w") as f:
+			json.dump([], f)
+	except:
+		"probably HOME not set"
 dirs += os.getenv("PATH", "").split(":")
 dirs = list(dict.fromkeys(dirs))
 match_fns = {
@@ -313,6 +327,7 @@ _conf.default = True
 _dirpath = f"{os.getenv('HOME', '/tmp')}/.config/where/"
 _filepath = "config.json"
 _path = os.path.abspath(os.path.join(_dirpath, _filepath))
+_conf.path = None
 def rdconfig(path=None, dirpath=None, filepath=None):
 	if not path:
 		if not dirpath: dirpath = _dirpath
@@ -324,6 +339,7 @@ def rdconfig(path=None, dirpath=None, filepath=None):
 		conf = json.load(f)
 	conf = mdict(conf)
 	conf.default = False
+	conf.path = path
 	return conf
 def mkconfig(path=None, dirpath=_dirpath, filepath=_filepath, _conf=_conf):
 	if not path:
@@ -343,7 +359,7 @@ def verbose_print(args, min_lvl, *printargs, **printkwargs):
 def main(args=sys.argv):
 	conf = _conf.copy()
 
-	p = argparse.ArgumentParser("Locate the binary, source, and manual-page paths for a file name or regex pattern.")
+	p = argparse.ArgumentParser("Locate the binary, source, and manual-page paths for a file name or regex pattern")
 	p.add_argument("bin", help="The file to search for - also use create_config_default to create a default config; use show_config to show config")
 	p.add_argument("--config", help=f"The path to the config file (used for creation and reading) - default {_path}", default=None)
 	p.add_argument("-r", "--regex", action="store_true", help="use pure regex to match (consider using --match or --fullmatch instead)", default=None)
@@ -364,6 +380,8 @@ def main(args=sys.argv):
 		conf = rdconfig(args.config)
 		if conf.default:
 			print("\033[31m// note: default config because no file exists/was specified\033[0m")
+		else:
+			print("\033[32mfound config file:", conf.path, end="\033[0m\n")
 		print_json(data=conf)
 		return
 	if args.bin == "remove_config":
